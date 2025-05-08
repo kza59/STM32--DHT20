@@ -42,6 +42,7 @@
 #define LCD_8BIT_2LINES_5x8_FONT				0x38
 #define LCD_DISPLAY_ON_CURSOR_OFF_BLINK_OFF		0x0C
 #define LCD_ENTRY_MODE							0x06
+#define DHT20_ADDRESS 							0x38
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -66,7 +67,7 @@ void LCD_WriteByte(uint8_t byte);
 void LCD_PulseEnable(void);
 void writeToLCD(const char* str);
 void LCD_Init(void);
-void DHT20_Init(void);
+void DHT20_Measure(void);
 char* getMeasurement(void);
 /* USER CODE END PFP */
 
@@ -116,7 +117,7 @@ int main(void)
   writeToLCD("WELCOME");
 
 
-  DHT20_Init();
+  DHT20_Measure();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -373,78 +374,104 @@ void LCD_Init(void) {
     HAL_Delay(1);
 }
 
-void DHT20_Init(void) {
-    HAL_GPIO_WritePin(GPIOB, DHT20_EN_Pin, GPIO_PIN_SET);
-    HAL_Delay(100);
+void DHT20_Measure(void) {
+    HAL_GPIO_WritePin(GPIOB, DHT20_EN_Pin, GPIO_PIN_SET);  // Power ON
+    HAL_Delay(200);
 
     uint8_t status_byte = 0;
     uint8_t command_buf[3] = {0xAC, 0x33, 0x00};
     uint8_t receive_buf[6] = {0};
-    uint8_t crc_buf = 0;
+    uint8_t init_reg[2];
+    HAL_StatusTypeDef res;
+    int attempts = 3;
 
-
-    HAL_I2C_Master_Receive(&hi2c1, 0x38 << 1, &status_byte, 1, 500);
-    if ((status_byte & 0x18) != 0x18) {
+    while (attempts--) {
         LCD_SendCommand(LCD_CLEAR);
-        HAL_Delay(10);
-        writeToLCD("Issue: DHT20");
-        LCD_SendCommand(LCD_NEXTLINE);
-        writeToLCD("Init 0x1B, 0x1C, 0x1E");
-        uint8_t init_reg[2];
+        writeToLCD("Checking Status...");
+        res = HAL_I2C_Master_Receive(&hi2c1, DHT20_ADDRESS << 1, &status_byte, 1, 500);
 
+        if (res != HAL_OK) {
+            LCD_SendCommand(LCD_NEXTLINE);
+            writeToLCD("I2C Err - Resetting");
+            HAL_I2C_DeInit(&hi2c1);
+            HAL_Delay(10);
+            HAL_I2C_Init(&hi2c1);
+            HAL_Delay(100);
+            continue;
+        }
 
-        init_reg[0] = 0x1B;
-        init_reg[1] = 0x00;
-        HAL_I2C_Master_Transmit(&hi2c1, 0x38 << 1, init_reg, 2, 500);
-        HAL_Delay(5);
+        if ((status_byte & 0x18) != 0x18) {
+            LCD_SendCommand(LCD_CLEAR);
+            writeToLCD("Init Regs 1B 1C 1E");
 
+            init_reg[0] = 0x1B; init_reg[1] = 0x00;
+            HAL_I2C_Master_Transmit(&hi2c1, DHT20_ADDRESS << 1, init_reg, 2, 500);
+            HAL_Delay(5);
 
-        init_reg[0] = 0x1C;
-        init_reg[1] = 0x00;
-        HAL_I2C_Master_Transmit(&hi2c1, 0x38 << 1, init_reg, 2, 500);
-        HAL_Delay(5);
+            init_reg[0] = 0x1C; init_reg[1] = 0x00;
+            HAL_I2C_Master_Transmit(&hi2c1, DHT20_ADDRESS << 1, init_reg, 2, 500);
+            HAL_Delay(5);
 
+            init_reg[0] = 0x1E; init_reg[1] = 0x00;
+            HAL_I2C_Master_Transmit(&hi2c1, DHT20_ADDRESS << 1, init_reg, 2, 500);
+            HAL_Delay(5);
+        }
 
-        init_reg[0] = 0x1E;
-        init_reg[1] = 0x00;
-        HAL_I2C_Master_Transmit(&hi2c1, 0x38 << 1, init_reg, 2, 500);
-        HAL_Delay(5);
+        res = HAL_I2C_Master_Transmit(&hi2c1, DHT20_ADDRESS << 1, command_buf, 3, 500);
+        HAL_Delay(80);
+        if (res != HAL_OK) {
+            LCD_SendCommand(LCD_CLEAR);
+            writeToLCD("Cmd Fail - Reset");
+            HAL_I2C_DeInit(&hi2c1);
+            HAL_Delay(10);
+            HAL_I2C_Init(&hi2c1);
+            HAL_Delay(100);
+            continue;
+        }
 
+        HAL_I2C_Master_Receive(&hi2c1, DHT20_ADDRESS << 1, &status_byte, 1, 500);
+        if ((status_byte & 0x80) == 0) {
+            res = HAL_I2C_Master_Receive(&hi2c1, DHT20_ADDRESS << 1, receive_buf, 6, 1000);
+            if (res != HAL_OK) {
+                LCD_SendCommand(LCD_CLEAR);
+                writeToLCD("Read Fail - Retry");
+                continue;
+            }
+
+            uint32_t raw_humidity = ((uint32_t)receive_buf[1] << 12) |
+                                    ((uint32_t)receive_buf[2] << 4) |
+                                    ((uint32_t)(receive_buf[3] >> 4));
+
+            uint32_t raw_temperature = (((uint32_t)(receive_buf[3] & 0x0F)) << 16) |
+                                       ((uint32_t)receive_buf[4] << 8) |
+                                       (uint32_t)receive_buf[5];
+
+            float humidity = (raw_humidity / 1048576.0) * 100.0;
+            float temperature = ((raw_temperature / 1048576.0) * 200.0) - 50.0;
+
+            char lcd_buf[32];
+            LCD_SendCommand(LCD_CLEAR);
+            snprintf(lcd_buf, sizeof(lcd_buf), "Hum: %.2f%%", humidity);
+            writeToLCD(lcd_buf);
+            LCD_SendCommand(LCD_NEXTLINE);
+            snprintf(lcd_buf, sizeof(lcd_buf), "Temp: %.2fC", temperature);
+            writeToLCD(lcd_buf);
+
+            break;  // success
+        } else {
+            LCD_SendCommand(LCD_CLEAR);
+            writeToLCD("Data not ready");
+            HAL_Delay(100);
+        }
     }
 
-    HAL_Delay(10);
-    HAL_I2C_Master_Transmit(&hi2c1, 0x38 << 1, command_buf, 3, 500);
-    HAL_Delay(80);
-
-    HAL_I2C_Master_Receive(&hi2c1, 0x38 << 1, &status_byte, 1, 500);
-    if ((status_byte & 0x80) == 0) {
-        HAL_I2C_Master_Receive(&hi2c1, 0x38 << 1, receive_buf, 6, 1000);
-
-
-        uint32_t raw_humidity = ((uint32_t)receive_buf[1] << 12) |
-                                ((uint32_t)receive_buf[2] << 4) |
-                                ((uint32_t)(receive_buf[3] >> 4));
-
-        uint32_t raw_temperature = (((uint32_t)(receive_buf[3] & 0x0F)) << 16) |
-                                   ((uint32_t)receive_buf[4] << 8) |
-                                   (uint32_t)receive_buf[5];
-
-        float humidity = (raw_humidity / 1048576.0) * 100.0;
-        float temperature = ((raw_temperature / 1048576.0) * 200.0) - 50.0;
-
-        char lcd_buf[32];
+    if (attempts < 0) {
         LCD_SendCommand(LCD_CLEAR);
-        snprintf(lcd_buf, sizeof(lcd_buf), "Hum: %.1f%%", humidity);
-        writeToLCD(lcd_buf);
-        LCD_SendCommand(LCD_NEXTLINE);
-        snprintf(lcd_buf, sizeof(lcd_buf), "Temp: %.1fC", temperature);
-        writeToLCD(lcd_buf);
-    } else {
-        LCD_SendCommand(LCD_CLEAR);
-        writeToLCD("Data not ready");
+        writeToLCD("DHT20 Failed");
     }
+
+    HAL_GPIO_WritePin(GPIOB, DHT20_EN_Pin, GPIO_PIN_RESET);
 }
-
 
 void turnOnLED(int led_number) {
 	switch(led_number) {
