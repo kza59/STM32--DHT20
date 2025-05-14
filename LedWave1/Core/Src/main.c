@@ -128,6 +128,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  turnOnLED(0);
+	  DHT20_Measure();
+	  HAL_Delay(5000);
+
   }
   /* USER CODE END 3 */
 }
@@ -391,6 +394,7 @@ void DHT20_Measure(void) {
         res = HAL_I2C_Master_Receive(&hi2c1, DHT20_ADDRESS << 1, &status_byte, 1, 500);
 
         if (res != HAL_OK) {
+        	turnOnLED(2);
             LCD_SendCommand(LCD_NEXTLINE);
             writeToLCD("I2C Err - Resetting");
             HAL_I2C_DeInit(&hi2c1);
@@ -420,6 +424,7 @@ void DHT20_Measure(void) {
         res = HAL_I2C_Master_Transmit(&hi2c1, DHT20_ADDRESS << 1, command_buf, 3, 500);
         HAL_Delay(80);
         if (res != HAL_OK) {
+        	turnOnLED(2);
             LCD_SendCommand(LCD_CLEAR);
             writeToLCD("Cmd Fail - Reset");
             HAL_I2C_DeInit(&hi2c1);
@@ -435,6 +440,7 @@ void DHT20_Measure(void) {
             if (res != HAL_OK) {
                 LCD_SendCommand(LCD_CLEAR);
                 writeToLCD("Read Fail - Retry");
+            	turnOnLED(2);
                 continue;
             }
 
@@ -456,9 +462,10 @@ void DHT20_Measure(void) {
             LCD_SendCommand(LCD_NEXTLINE);
             snprintf(lcd_buf, sizeof(lcd_buf), "Temp: %.2fC", temperature);
             writeToLCD(lcd_buf);
-
+        	turnOnLED(1);
             break;  // success
         } else {
+        	turnOnLED(3);
             LCD_SendCommand(LCD_CLEAR);
             writeToLCD("Data not ready");
             HAL_Delay(100);
